@@ -12,26 +12,20 @@ type DataBlockedFrame struct {
 	MaximumData protocol.ByteCount
 }
 
-func parseDataBlockedFrame(r *bytes.Reader, _ protocol.VersionNumber) (*DataBlockedFrame, error) {
-	if _, err := r.ReadByte(); err != nil {
-		return nil, err
-	}
+func parseDataBlockedFrame(r *bytes.Reader, _ protocol.Version) (*DataBlockedFrame, error) {
 	offset, err := quicvarint.Read(r)
 	if err != nil {
 		return nil, err
 	}
-	return &DataBlockedFrame{
-		MaximumData: protocol.ByteCount(offset),
-	}, nil
+	return &DataBlockedFrame{MaximumData: protocol.ByteCount(offset)}, nil
 }
 
-func (f *DataBlockedFrame) Append(b []byte, version protocol.VersionNumber) ([]byte, error) {
-	b = append(b, 0x14)
-	b = quicvarint.Append(b, uint64(f.MaximumData))
-	return b, nil
+func (f *DataBlockedFrame) Append(b []byte, version protocol.Version) ([]byte, error) {
+	b = append(b, dataBlockedFrameType)
+	return quicvarint.Append(b, uint64(f.MaximumData)), nil
 }
 
 // Length of a written frame
-func (f *DataBlockedFrame) Length(version protocol.VersionNumber) protocol.ByteCount {
+func (f *DataBlockedFrame) Length(version protocol.Version) protocol.ByteCount {
 	return 1 + quicvarint.Len(uint64(f.MaximumData))
 }

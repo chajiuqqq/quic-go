@@ -12,10 +12,7 @@ type PathResponseFrame struct {
 	Data [8]byte
 }
 
-func parsePathResponseFrame(r *bytes.Reader, _ protocol.VersionNumber) (*PathResponseFrame, error) {
-	if _, err := r.ReadByte(); err != nil {
-		return nil, err
-	}
+func parsePathResponseFrame(r *bytes.Reader, _ protocol.Version) (*PathResponseFrame, error) {
 	frame := &PathResponseFrame{}
 	if _, err := io.ReadFull(r, frame.Data[:]); err != nil {
 		if err == io.ErrUnexpectedEOF {
@@ -26,13 +23,13 @@ func parsePathResponseFrame(r *bytes.Reader, _ protocol.VersionNumber) (*PathRes
 	return frame, nil
 }
 
-func (f *PathResponseFrame) Append(b []byte, _ protocol.VersionNumber) ([]byte, error) {
-	b = append(b, 0x1b)
+func (f *PathResponseFrame) Append(b []byte, _ protocol.Version) ([]byte, error) {
+	b = append(b, pathResponseFrameType)
 	b = append(b, f.Data[:]...)
 	return b, nil
 }
 
 // Length of a written frame
-func (f *PathResponseFrame) Length(_ protocol.VersionNumber) protocol.ByteCount {
+func (f *PathResponseFrame) Length(_ protocol.Version) protocol.ByteCount {
 	return 1 + 8
 }

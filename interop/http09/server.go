@@ -37,10 +37,11 @@ func (w *responseWriter) WriteHeader(int) {}
 type Server struct {
 	*http.Server
 
+	ForceRetry bool
 	QuicConfig *quic.Config
 
 	mutex    sync.Mutex
-	listener quic.EarlyListener
+	listener *quic.EarlyListener
 }
 
 // Close closes the server.
@@ -68,7 +69,11 @@ func (s *Server) ListenAndServe() error {
 
 	tlsConf := s.TLSConfig.Clone()
 	tlsConf.NextProtos = []string{h09alpn}
-	ln, err := quic.ListenEarly(conn, tlsConf, s.QuicConfig)
+	tr := quic.Transport{Conn: conn}
+	if s.ForceRetry {
+		tr.MaxUnvalidatedHandshakes = -1
+	}
+	ln, err := tr.ListenEarly(tlsConf, s.QuicConfig)
 	if err != nil {
 		return err
 	}

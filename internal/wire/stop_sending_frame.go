@@ -15,11 +15,7 @@ type StopSendingFrame struct {
 }
 
 // parseStopSendingFrame parses a STOP_SENDING frame
-func parseStopSendingFrame(r *bytes.Reader, _ protocol.VersionNumber) (*StopSendingFrame, error) {
-	if _, err := r.ReadByte(); err != nil {
-		return nil, err
-	}
-
+func parseStopSendingFrame(r *bytes.Reader, _ protocol.Version) (*StopSendingFrame, error) {
 	streamID, err := quicvarint.Read(r)
 	if err != nil {
 		return nil, err
@@ -36,12 +32,12 @@ func parseStopSendingFrame(r *bytes.Reader, _ protocol.VersionNumber) (*StopSend
 }
 
 // Length of a written frame
-func (f *StopSendingFrame) Length(_ protocol.VersionNumber) protocol.ByteCount {
+func (f *StopSendingFrame) Length(_ protocol.Version) protocol.ByteCount {
 	return 1 + quicvarint.Len(uint64(f.StreamID)) + quicvarint.Len(uint64(f.ErrorCode))
 }
 
-func (f *StopSendingFrame) Append(b []byte, _ protocol.VersionNumber) ([]byte, error) {
-	b = append(b, 0x5)
+func (f *StopSendingFrame) Append(b []byte, _ protocol.Version) ([]byte, error) {
+	b = append(b, stopSendingFrameType)
 	b = quicvarint.Append(b, uint64(f.StreamID))
 	b = quicvarint.Append(b, uint64(f.ErrorCode))
 	return b, nil

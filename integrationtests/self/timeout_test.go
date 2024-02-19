@@ -22,12 +22,12 @@ type faultyConn struct {
 	net.PacketConn
 
 	MaxPackets int32
-	counter    int32
+	counter    atomic.Int32
 }
 
 func (c *faultyConn) ReadFrom(p []byte) (int, net.Addr, error) {
 	n, addr, err := c.PacketConn.ReadFrom(p)
-	counter := atomic.AddInt32(&c.counter, 1)
+	counter := c.counter.Add(1)
 	if counter <= c.MaxPackets {
 		return n, addr, err
 	}
@@ -35,7 +35,7 @@ func (c *faultyConn) ReadFrom(p []byte) (int, net.Addr, error) {
 }
 
 func (c *faultyConn) WriteTo(p []byte, addr net.Addr) (int, error) {
-	counter := atomic.AddInt32(&c.counter, 1)
+	counter := c.counter.Add(1)
 	if counter <= c.MaxPackets {
 		return c.PacketConn.WriteTo(p, addr)
 	}
@@ -54,9 +54,10 @@ var _ = Describe("Timeout tests", func() {
 		errChan := make(chan error)
 		go func() {
 			_, err := quic.DialAddr(
+				context.Background(),
 				"localhost:12345",
 				getTLSClientConfig(),
-				getQuicConfig(&quic.Config{HandshakeIdleTimeout: 10 * time.Millisecond}),
+				getQuicConfig(&quic.Config{HandshakeIdleTimeout: scaleDuration(50 * time.Millisecond)}),
 			)
 			errChan <- err
 		}()
@@ -70,7 +71,7 @@ var _ = Describe("Timeout tests", func() {
 		defer cancel()
 		errChan := make(chan error)
 		go func() {
-			_, err := quic.DialAddrContext(
+			_, err := quic.DialAddr(
 				ctx,
 				"localhost:12345",
 				getTLSClientConfig(),
@@ -89,7 +90,7 @@ var _ = Describe("Timeout tests", func() {
 		defer cancel()
 		errChan := make(chan error)
 		go func() {
-			_, err := quic.DialAddrEarlyContext(
+			_, err := quic.DialAddrEarly(
 				ctx,
 				"localhost:12345",
 				getTLSClientConfig(),
@@ -104,7 +105,7 @@ var _ = Describe("Timeout tests", func() {
 	})
 
 	It("returns net.Error timeout errors when an idle timeout occurs", func() {
-		const idleTimeout = 100 * time.Millisecond
+		const idleTimeout = 500 * time.Millisecond
 
 		server, err := quic.ListenAddr(
 			"localhost:0",
@@ -135,6 +136,7 @@ var _ = Describe("Timeout tests", func() {
 		defer proxy.Close()
 
 		conn, err := quic.DialAddr(
+			context.Background(),
 			fmt.Sprintf("localhost:%d", proxy.LocalPort()),
 			getTLSClientConfig(),
 			getQuicConfig(&quic.Config{DisablePathMTUDiscovery: true, MaxIdleTimeout: idleTimeout}),
@@ -171,7 +173,7 @@ var _ = Describe("Timeout tests", func() {
 		var idleTimeout time.Duration
 
 		BeforeEach(func() {
-			idleTimeout = scaleDuration(100 * time.Millisecond)
+			idleTimeout = scaleDuration(500 * time.Millisecond)
 		})
 
 		It("times out after inactivity", func() {
@@ -183,22 +185,25 @@ var _ = Describe("Timeout tests", func() {
 			Expect(err).ToNot(HaveOccurred())
 			defer server.Close()
 
+			serverConnChan := make(chan quic.Connection, 1)
 			serverConnClosed := make(chan struct{})
 			go func() {
 				defer GinkgoRecover()
 				conn, err := server.Accept(context.Background())
 				Expect(err).ToNot(HaveOccurred())
+				serverConnChan <- conn
 				conn.AcceptStream(context.Background()) // blocks until the connection is closed
 				close(serverConnClosed)
 			}()
 
-			tr := newPacketTracer()
+			counter, tr := newPacketTracer()
 			conn, err := quic.DialAddr(
+				context.Background(),
 				fmt.Sprintf("localhost:%d", server.Addr().(*net.UDPAddr).Port),
 				getTLSClientConfig(),
 				getQuicConfig(&quic.Config{
 					MaxIdleTimeout:          idleTimeout,
-					Tracer:                  newTracer(func() logging.ConnectionTracer { return tr }),
+					Tracer:                  newTracer(tr),
 					DisablePathMTUDiscovery: true,
 				}),
 			)
@@ -212,7 +217,7 @@ var _ = Describe("Timeout tests", func() {
 			}()
 			Eventually(done, 2*idleTimeout).Should(BeClosed())
 			var lastAckElicitingPacketSentAt time.Time
-			for _, p := range tr.getSentShortHeaderPackets() {
+			for _, p := range counter.getSentShortHeaderPackets() {
 				var hasAckElicitingFrame bool
 				for _, f := range p.frames {
 					if _, ok := f.(*logging.AckFrame); ok {
@@ -225,7 +230,7 @@ var _ = Describe("Timeout tests", func() {
 					lastAckElicitingPacketSentAt = p.time
 				}
 			}
-			rcvdPackets := tr.getRcvdShortHeaderPackets()
+			rcvdPackets := counter.getRcvdShortHeaderPackets()
 			lastPacketRcvdAt := rcvdPackets[len(rcvdPackets)-1].time
 			// We're ignoring here that only the first ack-eliciting packet sent resets the idle timeout.
 			// This is ok since we're dealing with a lossless connection here,
@@ -237,7 +242,7 @@ var _ = Describe("Timeout tests", func() {
 			Consistently(serverConnClosed).ShouldNot(BeClosed())
 
 			// make the go routine return
-			Expect(server.Close()).To(Succeed())
+			(<-serverConnChan).CloseWithError(0, "")
 			Eventually(serverConnClosed).Should(BeClosed())
 		})
 
@@ -263,16 +268,19 @@ var _ = Describe("Timeout tests", func() {
 			Expect(err).ToNot(HaveOccurred())
 			defer proxy.Close()
 
+			serverConnChan := make(chan quic.Connection, 1)
 			serverConnClosed := make(chan struct{})
 			go func() {
 				defer GinkgoRecover()
 				conn, err := server.Accept(context.Background())
 				Expect(err).ToNot(HaveOccurred())
+				serverConnChan <- conn
 				<-conn.Context().Done() // block until the connection is closed
 				close(serverConnClosed)
 			}()
 
 			conn, err := quic.DialAddr(
+				context.Background(),
 				fmt.Sprintf("localhost:%d", proxy.LocalPort()),
 				getTLSClientConfig(),
 				getQuicConfig(&quic.Config{MaxIdleTimeout: idleTimeout, DisablePathMTUDiscovery: true}),
@@ -305,13 +313,13 @@ var _ = Describe("Timeout tests", func() {
 			Consistently(serverConnClosed).ShouldNot(BeClosed())
 
 			// make the go routine return
-			Expect(server.Close()).To(Succeed())
+			(<-serverConnChan).CloseWithError(0, "")
 			Eventually(serverConnClosed).Should(BeClosed())
 		})
 	})
 
 	It("does not time out if keepalive is set", func() {
-		const idleTimeout = 100 * time.Millisecond
+		const idleTimeout = 500 * time.Millisecond
 
 		server, err := quic.ListenAddr(
 			"localhost:0",
@@ -321,11 +329,13 @@ var _ = Describe("Timeout tests", func() {
 		Expect(err).ToNot(HaveOccurred())
 		defer server.Close()
 
+		serverConnChan := make(chan quic.Connection, 1)
 		serverConnClosed := make(chan struct{})
 		go func() {
 			defer GinkgoRecover()
 			conn, err := server.Accept(context.Background())
 			Expect(err).ToNot(HaveOccurred())
+			serverConnChan <- conn
 			conn.AcceptStream(context.Background()) // blocks until the connection is closed
 			close(serverConnClosed)
 		}()
@@ -341,6 +351,7 @@ var _ = Describe("Timeout tests", func() {
 		defer proxy.Close()
 
 		conn, err := quic.DialAddr(
+			context.Background(),
 			fmt.Sprintf("localhost:%d", proxy.LocalPort()),
 			getTLSClientConfig(),
 			getQuicConfig(&quic.Config{
@@ -365,14 +376,14 @@ var _ = Describe("Timeout tests", func() {
 		_, err = str.Write([]byte("foobar"))
 		checkTimeoutError(err)
 
-		Expect(server.Close()).To(Succeed())
+		(<-serverConnChan).CloseWithError(0, "")
 		Eventually(serverConnClosed).Should(BeClosed())
 	})
 
 	Context("faulty packet conns", func() {
 		const handshakeTimeout = time.Second / 2
 
-		runServer := func(ln quic.Listener) error {
+		runServer := func(ln *quic.Listener) error {
 			conn, err := ln.Accept(context.Background())
 			if err != nil {
 				return err
@@ -423,6 +434,7 @@ var _ = Describe("Timeout tests", func() {
 			go func() {
 				defer GinkgoRecover()
 				conn, err := quic.DialAddr(
+					context.Background(),
 					fmt.Sprintf("localhost:%d", ln.Addr().(*net.UDPAddr).Port),
 					getTLSClientConfig(),
 					getQuicConfig(&quic.Config{
@@ -449,6 +461,7 @@ var _ = Describe("Timeout tests", func() {
 			case serverErr := <-serverErrChan:
 				Expect(serverErr).To(HaveOccurred())
 				Expect(serverErr.Error()).To(ContainSubstring(io.ErrClosedPipe.Error()))
+				defer ln.Close()
 			default:
 				Expect(ln.Close()).To(Succeed())
 				Eventually(serverErrChan).Should(Receive())
@@ -467,6 +480,7 @@ var _ = Describe("Timeout tests", func() {
 				}),
 			)
 			Expect(err).ToNot(HaveOccurred())
+			defer ln.Close()
 
 			serverErrChan := make(chan error, 1)
 			go func() {
@@ -484,9 +498,9 @@ var _ = Describe("Timeout tests", func() {
 			go func() {
 				defer GinkgoRecover()
 				conn, err := quic.Dial(
+					context.Background(),
 					&faultyConn{PacketConn: conn, MaxPackets: maxPackets},
 					ln.Addr(),
-					"localhost",
 					getTLSClientConfig(),
 					getQuicConfig(&quic.Config{DisablePathMTUDiscovery: true}),
 				)

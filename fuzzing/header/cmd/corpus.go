@@ -2,7 +2,8 @@ package main
 
 import (
 	"log"
-	"math/rand"
+
+	"golang.org/x/exp/rand"
 
 	"github.com/quic-go/quic-go/fuzzing/header"
 	"github.com/quic-go/quic-go/fuzzing/internal/helper"
@@ -19,9 +20,9 @@ func getRandomData(l int) []byte {
 }
 
 func getVNP(src, dest protocol.ArbitraryLenConnectionID, numVersions int) []byte {
-	versions := make([]protocol.VersionNumber, numVersions)
+	versions := make([]protocol.Version, numVersions)
 	for i := 0; i < numVersions; i++ {
-		versions[i] = protocol.VersionNumber(rand.Uint32())
+		versions[i] = protocol.Version(rand.Uint32())
 	}
 	return wire.ComposeVersionNegotiation(src, dest, versions)
 }

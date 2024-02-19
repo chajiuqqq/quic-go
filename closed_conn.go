@@ -16,13 +16,13 @@ type closedLocalConn struct {
 	perspective protocol.Perspective
 	logger      utils.Logger
 
-	sendPacket func(net.Addr, *packetInfo)
+	sendPacket func(net.Addr, packetInfo)
 }
 
 var _ packetHandler = &closedLocalConn{}
 
 // newClosedLocalConn creates a new closedLocalConn and runs it.
-func newClosedLocalConn(sendPacket func(net.Addr, *packetInfo), pers protocol.Perspective, logger utils.Logger) packetHandler {
+func newClosedLocalConn(sendPacket func(net.Addr, packetInfo), pers protocol.Perspective, logger utils.Logger) packetHandler {
 	return &closedLocalConn{
 		sendPacket:  sendPacket,
 		perspective: pers,
@@ -30,7 +30,7 @@ func newClosedLocalConn(sendPacket func(net.Addr, *packetInfo), pers protocol.Pe
 	}
 }
 
-func (c *closedLocalConn) handlePacket(p *receivedPacket) {
+func (c *closedLocalConn) handlePacket(p receivedPacket) {
 	c.counter++
 	// exponential backoff
 	// only send a CONNECTION_CLOSE for the 1st, 2nd, 4th, 8th, 16th, ... packet arriving
@@ -41,9 +41,9 @@ func (c *closedLocalConn) handlePacket(p *receivedPacket) {
 	c.sendPacket(p.remoteAddr, p.info)
 }
 
-func (c *closedLocalConn) shutdown()                            {}
-func (c *closedLocalConn) destroy(error)                        {}
-func (c *closedLocalConn) getPerspective() protocol.Perspective { return c.perspective }
+func (c *closedLocalConn) destroy(error)                              {}
+func (c *closedLocalConn) closeWithTransportError(TransportErrorCode) {}
+func (c *closedLocalConn) getPerspective() protocol.Perspective       { return c.perspective }
 
 // A closedRemoteConn is a connection that was closed remotely.
 // For such a connection, we might receive reordered packets that were sent before the CONNECTION_CLOSE.
@@ -58,7 +58,7 @@ func newClosedRemoteConn(pers protocol.Perspective) packetHandler {
 	return &closedRemoteConn{perspective: pers}
 }
 
-func (s *closedRemoteConn) handlePacket(*receivedPacket)         {}
-func (s *closedRemoteConn) shutdown()                            {}
-func (s *closedRemoteConn) destroy(error)                        {}
-func (s *closedRemoteConn) getPerspective() protocol.Perspective { return s.perspective }
+func (c *closedRemoteConn) handlePacket(receivedPacket)                {}
+func (c *closedRemoteConn) destroy(error)                              {}
+func (c *closedRemoteConn) closeWithTransportError(TransportErrorCode) {}
+func (c *closedRemoteConn) getPerspective() protocol.Perspective       { return c.perspective }
